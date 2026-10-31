@@ -14,8 +14,9 @@ def build_model() -> AGDSN:
         num_encoder_layers=cfg.TRANSFORMER_LAYERS,
         num_decoder_layers=cfg.TRANSFORMER_LAYERS,
         use_backbone=False,
-        clip_memory_len=cfg.SUBCLIP_LENGTH,
-        clip_context_len=cfg.SUBCLIP_LENGTH,
+        frame_memory_len=cfg.FRAME_MEMORY_LENGTH,
+        clip_memory_len=cfg.CLIP_MEMORY_LENGTH,
+        prediction_len=cfg.PREDICTION_LENGTH,
     )
 
 def build_optimizer_and_scheduler(model: torch.nn.Module):
@@ -49,6 +50,14 @@ def compute_training_loss(
         weights,
     )
 
+def slice_subclip_targets(labels, history_len=cfg.FRAME_MEMORY_LENGTH,
+                          prediction_len=cfg.PREDICTION_LENGTH):
+    """Split labels into current t and ordered predictions t through t+F-1."""
+    if labels.size(1) < history_len + prediction_len:
+        raise ValueError("Subclip labels must cover history and the full prediction interval.")
+    return labels[:, history_len:history_len + 1], labels[:, history_len:history_len + prediction_len]
+
+
 def _move_batch(batch: dict[str, torch.Tensor], device: torch.device):
     required = ("features", "current_targets", "future_targets")
     missing = [key for key in required if key not in batch]
@@ -68,7 +77,7 @@ def train_one_epoch(
     for raw_batch in loader:
         batch = _move_batch(raw_batch, device)
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(batch["features"])
+        outputs = model.forward_window(batch["features"][:, :model.frame_memory_len + 1])
         losses = compute_training_loss(
             outputs,
             batch["current_targets"],
@@ -91,7 +100,7 @@ def evaluate_one_epoch(
     batches = 0
     for raw_batch in loader:
         batch = _move_batch(raw_batch, device)
-        outputs = model(batch["features"])
+        outputs = model.forward_window(batch["features"][:, :model.frame_memory_len + 1])
         losses = compute_training_loss(
             outputs,
             batch["current_targets"],
